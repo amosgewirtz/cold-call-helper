@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
 import useLocalStorage from './hooks/useLocalStorage';
+import { useFirestoreDoc, useFirestoreCollection, useFirestoreVersions } from './hooks/useFirestore';
 import initialTree from './data/initialTree';
 import CallMode from './components/CallMode';
 import EditMode from './components/EditMode';
@@ -14,48 +15,47 @@ const MODE_LABELS = { call: 'Call', edit: 'Edit', stats: 'Stats', log: 'Call Log
 
 export default function App() {
   const [mode, setMode] = useState('call');
-  const [tree, setTree] = useLocalStorage('scriptTree', initialTree);
-  const [callLogs, setCallLogs] = useLocalStorage('callLogs', []);
-  const [aiObjections, setAiObjections] = useLocalStorage('aiObjections', []);
-  const [versions, setVersions] = useLocalStorage('scriptVersions', () => {
-    const stored = localStorage.getItem('scriptVersions');
-    if (stored) return JSON.parse(stored);
-    return [{ tree: initialTree, timestamp: Date.now(), label: 'Initial version' }];
-  });
+  const [tree, setTree, treeLoading] = useFirestoreDoc('config', 'scriptTree', initialTree);
+  const [callLogs, addCallLogToDb, logsLoading] = useFirestoreCollection('callLogs');
+  const [aiObjections, addObjectionToDb, objectionsLoading] = useFirestoreCollection('aiObjections');
+  const [versions, addVersion, deleteVersion, versionsLoading] = useFirestoreVersions(50);
   const [showVersions, setShowVersions] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [apiKey, setApiKey] = useLocalStorage('anthropicApiKey', '');
 
-  const initVersionsIfNeeded = useCallback(() => {
-    if (!versions || versions.length === 0) {
-      setVersions([{ tree: initialTree, timestamp: Date.now(), label: 'Initial version' }]);
-    }
-  }, [versions, setVersions]);
+  const loading = treeLoading || logsLoading;
 
-  useState(() => { initVersionsIfNeeded(); });
+  const saveTreeVersion = useCallback(async (newTree, label = '') => {
+    await setTree(newTree);
+    await addVersion(newTree, label);
+  }, [setTree, addVersion]);
 
-  const saveTreeVersion = useCallback((newTree, label = '') => {
-    setTree(newTree);
-    setVersions(prev => {
-      const newVersions = [
-        { tree: newTree, timestamp: Date.now(), label },
-        ...(prev || []),
-      ].slice(0, 50);
-      return newVersions;
-    });
-  }, [setTree, setVersions]);
+  const addCallLog = useCallback(async (log) => {
+    await addCallLogToDb(log);
+  }, [addCallLogToDb]);
 
-  const addCallLog = useCallback((log) => {
-    setCallLogs(prev => [log, ...prev]);
-  }, [setCallLogs]);
+  const addAiObjection = useCallback(async (objection) => {
+    await addObjectionToDb(objection);
+  }, [addObjectionToDb]);
 
-  const addAiObjection = useCallback((objection) => {
-    setAiObjections(prev => [objection, ...prev]);
-  }, [setAiObjections]);
-
-  const restoreVersion = useCallback((version) => {
-    setTree(version.tree);
+  const restoreVersion = useCallback(async (version) => {
+    await setTree(version.tree);
   }, [setTree]);
+
+  const setVersions = useCallback(async (updater) => {
+    // Only used for deleting versions in VersionHistory
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="app">
+        <div className="loading-screen">
+          <div className="loading-spinner" />
+          <p>Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app">
@@ -119,7 +119,7 @@ export default function App() {
       {showVersions && (
         <VersionHistory
           versions={versions}
-          setVersions={setVersions}
+          deleteVersion={deleteVersion}
           restoreVersion={restoreVersion}
           onClose={() => setShowVersions(false)}
         />

@@ -1,18 +1,18 @@
 import { useState } from 'react';
 
-export default function VersionHistory({ versions, setVersions, restoreVersion, onClose }) {
+export default function VersionHistory({ versions, deleteVersion, restoreVersion, onClose }) {
   const [previewIdx, setPreviewIdx] = useState(null);
   const [previewNodeId, setPreviewNodeId] = useState('choose_opener');
 
-  const handleRestore = (version, idx) => {
+  const handleRestore = (version) => {
     if (!confirm('Restore this version? This will replace the current script tree.')) return;
     restoreVersion(version);
     onClose();
   };
 
-  const handleDelete = (idx) => {
+  const handleDelete = (version) => {
     if (!confirm('Delete this version?')) return;
-    setVersions(prev => prev.filter((_, i) => i !== idx));
+    deleteVersion(version._docId);
   };
 
   const previewTree = previewIdx !== null ? versions[previewIdx]?.tree : null;
@@ -60,7 +60,7 @@ export default function VersionHistory({ versions, setVersions, restoreVersion, 
               <p className="stats-empty">No versions saved yet.</p>
             ) : (
               versions.map((v, i) => (
-                <div key={i} className="version-item">
+                <div key={v._docId || i} className="version-item">
                   <div className="version-info">
                     <span className="version-date">
                       {new Date(v.timestamp).toLocaleString()}
@@ -69,8 +69,8 @@ export default function VersionHistory({ versions, setVersions, restoreVersion, 
                   </div>
                   <div className="version-actions">
                     <button className="version-btn" onClick={() => { setPreviewIdx(i); setPreviewNodeId('choose_opener'); }}>Preview</button>
-                    <button className="version-btn version-restore" onClick={() => handleRestore(v, i)}>Restore</button>
-                    {i > 0 && <button className="version-btn version-delete" onClick={() => handleDelete(i)}>Delete</button>}
+                    <button className="version-btn version-restore" onClick={() => handleRestore(v)}>Restore</button>
+                    {i < versions.length - 1 && <button className="version-btn version-delete" onClick={() => handleDelete(v)}>Delete</button>}
                   </div>
                 </div>
               ))
