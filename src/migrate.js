@@ -1,5 +1,5 @@
 import { db } from './firebase';
-import { collection, addDoc, doc, setDoc, getDoc } from 'firebase/firestore';
+import { collection, addDoc, doc, setDoc, getDoc, getDocs, query, limit } from 'firebase/firestore';
 
 export async function migrateLocalStorageToFirestore() {
   if (localStorage.getItem('firestoreMigrated')) return;
@@ -13,19 +13,24 @@ export async function migrateLocalStorageToFirestore() {
     let migrated = 0;
 
     if (callLogs.length > 0) {
-      const existing = await getDoc(doc(db, 'config', '_migrationCheck'));
-      for (const log of callLogs) {
-        if (!log.timestamp) continue;
-        await addDoc(collection(db, 'callLogs'), log);
-        migrated++;
+      const existing = await getDocs(query(collection(db, 'callLogs'), limit(1)));
+      if (existing.empty) {
+        for (const log of callLogs) {
+          if (!log.timestamp) continue;
+          await addDoc(collection(db, 'callLogs'), log);
+          migrated++;
+        }
       }
     }
 
     if (aiObjections.length > 0) {
-      for (const obj of aiObjections) {
-        if (!obj.timestamp) continue;
-        await addDoc(collection(db, 'aiObjections'), obj);
-        migrated++;
+      const existing = await getDocs(query(collection(db, 'aiObjections'), limit(1)));
+      if (existing.empty) {
+        for (const obj of aiObjections) {
+          if (!obj.timestamp) continue;
+          await addDoc(collection(db, 'aiObjections'), obj);
+          migrated++;
+        }
       }
     }
 
@@ -39,14 +44,17 @@ export async function migrateLocalStorageToFirestore() {
     }
 
     if (versions.length > 0) {
-      for (const v of versions) {
-        if (!v.timestamp || !v.tree) continue;
-        await addDoc(collection(db, 'versions'), {
-          tree: v.tree,
-          timestamp: v.timestamp,
-          label: v.label || '',
-        });
-        migrated++;
+      const existing = await getDocs(query(collection(db, 'versions'), limit(1)));
+      if (existing.empty) {
+        for (const v of versions) {
+          if (!v.timestamp || !v.tree) continue;
+          await addDoc(collection(db, 'versions'), {
+            tree: v.tree,
+            timestamp: v.timestamp,
+            label: v.label || '',
+          });
+          migrated++;
+        }
       }
     }
 
