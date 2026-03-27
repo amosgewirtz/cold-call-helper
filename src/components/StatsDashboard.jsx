@@ -1,4 +1,4 @@
-import { useState, useMemo, memo, useCallback } from 'react';
+import { useState, useMemo, useRef, memo, useCallback } from 'react';
 import {
   ReactFlow,
   Handle,
@@ -264,14 +264,26 @@ function buildFlowElements(tree, logs) {
 
 function FlowDiagram({ tree, filteredLogs }) {
   const [hoveredId, setHoveredId] = useState(null);
+  const hoveredRef = useRef(null);
+  const leaveTimer = useRef(null);
 
   const flowData = useMemo(
     () => buildFlowElements(tree, filteredLogs),
     [tree, filteredLogs]
   );
 
-  const handleNodeEnter = useCallback((_, node) => setHoveredId(node.id), []);
-  const handleNodeLeave = useCallback(() => setHoveredId(null), []);
+  const handleNodeEnter = useCallback((_, node) => {
+    clearTimeout(leaveTimer.current);
+    hoveredRef.current = node.id;
+    setHoveredId(node.id);
+  }, []);
+
+  const handleNodeLeave = useCallback(() => {
+    hoveredRef.current = null;
+    leaveTimer.current = setTimeout(() => {
+      if (hoveredRef.current === null) setHoveredId(null);
+    }, 60);
+  }, []);
 
   // Recompute node counts and edge styles when a node is hovered
   const { displayNodes, displayEdges } = useMemo(() => {
