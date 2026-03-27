@@ -82,18 +82,6 @@ function mapLegacyPath(path) {
   return newPath;
 }
 
-function centerHeavyReorder(items) {
-  const n = items.length;
-  if (n <= 1) return items;
-  const result = new Array(n);
-  let li = 0, ri = n - 1;
-  for (let i = n - 1; i >= 0; i--) {
-    if ((n - 1 - i) % 2 === 0) result[li++] = items[i];
-    else result[ri--] = items[i];
-  }
-  return result;
-}
-
 /* ─── React Flow custom node ─── */
 
 const StatsNode = memo(function StatsNode({ data }) {
@@ -129,6 +117,7 @@ const nodeTypes = { stats: StatsNode };
 /* ─── Build React Flow elements — aggregated funnel ─── */
 
 const STATS_LABELS = {
+  choose_opener: 'Call answered',
   choose_pitch: 'Reached pitch',
   no_pitch: "Didn't reach pitch",
   pitch_legacy: 'Legacy pitch',
@@ -214,31 +203,19 @@ function buildFlowElements(tree, logs) {
 
   dagre.layout(g);
 
-  // Force openers to the same rank
+  // Force openers to the same rank, ordered by their position in the tree
   const root = Object.values(tree).find(n => n.isOpenerChoice);
   if (root) {
     const opIds = (root.options || []).map(o => o.targetNodeId).filter(id => globalNodeCounts[id]);
     if (opIds.length > 1) {
       const minY = Math.min(...opIds.map(id => g.node(id).y));
-      opIds.forEach(id => { g.node(id).y = minY; });
+      const xSlots = opIds.map(id => g.node(id).x).sort((a, b) => a - b);
+      opIds.forEach((id, i) => {
+        g.node(id).y = minY;
+        g.node(id).x = xSlots[i];
+      });
     }
   }
-
-  // Reorder siblings within each rank: heaviest nodes near center
-  const rankGroups = {};
-  nodeShells.forEach(node => {
-    const pos = g.node(node.id);
-    const rankKey = Math.round(pos.y);
-    if (!rankGroups[rankKey]) rankGroups[rankKey] = [];
-    rankGroups[rankKey].push({ id: node.id, total: node.data.total, x: pos.x });
-  });
-  Object.values(rankGroups).forEach(group => {
-    if (group.length <= 1) return;
-    const sorted = [...group].sort((a, b) => b.total - a.total);
-    const reordered = centerHeavyReorder(sorted);
-    const xSlots = group.map(n => n.x).sort((a, b) => a - b);
-    reordered.forEach((item, i) => { g.node(item.id).x = xSlots[i]; });
-  });
 
   // Bake positions into nodes
   const layoutedNodes = nodeShells.map(node => {
@@ -527,9 +504,6 @@ export default function StatsDashboard({ callLogs, aiObjections, tree }) {
       {/* Flow Diagram — always visible */}
       <div className="chart-card stats-flow-card">
         <h3>Call flow</h3>
-        <p className="flow-subtitle">
-          Hover a node to highlight its edges. Thicker edges = more calls. Scroll to zoom, drag to pan.
-        </p>
         <FlowDiagram tree={tree} filteredLogs={filteredLogs} />
       </div>
 
