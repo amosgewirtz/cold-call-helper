@@ -10,33 +10,16 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts';
 
-const OUTCOME_COLORS = {
-  'Booked meeting': '#16a34a',
-  'Got referral': '#22c55e',
-  'Sent email/follow up': '#2563eb',
-  'Not interested': '#ef4444',
-  'Left voicemail': '#f59e0b',
-  'No answer': '#6b7280',
-  'Wrong number': '#9ca3af',
-  'Gatekeeper blocked': '#6b7280',
-};
-const FALLBACK_COLORS = ['#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#6366f1'];
 const OPENER_IDS = ['opener_a', 'opener_b', 'opener_c'];
 const SUCCESS_OUTCOMES = ['Booked meeting', 'Got referral'];
-const POSITIVE_OUTCOMES = ['Booked meeting', 'Got referral', 'Sent email/follow up', 'Follow up later'];
 const RANGES = { '7d': 7, '30d': 30, all: Infinity };
 
 const DAGRE_NODE_W = 162;
 const DAGRE_NODE_H = 58;
 
 function isSuccess(o) { return SUCCESS_OUTCOMES.includes(o); }
-function isPositive(o) { return POSITIVE_OUTCOMES.includes(o); }
 function pct(n, t) { return t === 0 ? 0 : Math.round((n / t) * 100); }
 function getOpenerFromPath(p) { return p?.find(id => OPENER_IDS.includes(id)) || null; }
-
-function outcomeColor(name, idx) {
-  return OUTCOME_COLORS[name] || FALLBACK_COLORS[idx % FALLBACK_COLORS.length];
-}
 
 /* ─── Legacy path migration ─── */
 
@@ -411,59 +394,16 @@ export default function StatsDashboard({ callLogs, aiObjections, tree }) {
   const meetings = useMemo(() => filteredLogs.filter(l => l.outcome === 'Booked meeting').length, [filteredLogs]);
   const conversionRate = pct(meetings, totalCalls);
 
-  const openerStats = useMemo(() => {
-    const s = {};
-    OPENER_IDS.forEach(id => { s[id] = { total: 0, success: 0, positive: 0 }; });
-    filteredLogs.forEach(l => {
-      const op = getOpenerFromPath(l.path);
-      if (!op || !s[op]) return;
-      s[op].total++;
-      if (isSuccess(l.outcome)) s[op].success++;
-      if (isPositive(l.outcome)) s[op].positive++;
-    });
-    return OPENER_IDS
-      .map(id => ({
-        id,
-        name: tree[id]?.label || id,
-        total: s[id].total,
-        convRate: pct(s[id].success, s[id].total),
-        posRate: pct(s[id].positive, s[id].total),
-      }))
-      .filter(o => o.total > 0)
-      .sort((a, b) => b.convRate - a.convRate || b.posRate - a.posRate);
-  }, [filteredLogs, tree]);
-
-  const outcomeData = useMemo(() => {
-    const c = {};
-    filteredLogs.forEach(l => { c[l.outcome] = (c[l.outcome] || 0) + 1; });
-    return Object.entries(c)
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value);
-  }, [filteredLogs]);
-
   const callsOverTime = useMemo(() => {
     const dc = {};
     filteredLogs.forEach(l => {
       const day = new Date(l.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      dc[day] = (dc[day] || 0) + 1;
+      if (!dc[day]) dc[day] = { date: day, booked: 0, other: 0 };
+      if (l.outcome === 'Booked meeting') dc[day].booked++;
+      else dc[day].other++;
     });
-    return Object.entries(dc).map(([date, count]) => ({ date, count }));
+    return Object.values(dc);
   }, [filteredLogs]);
-
-  const commonObjections = useMemo(() => {
-    const oc = {};
-    const filtered = range === 'all'
-      ? aiObjections
-      : aiObjections.filter(o => o.timestamp >= Date.now() - RANGES[range] * 86400000);
-    filtered.forEach(o => {
-      const n = o.objection.toLowerCase().trim();
-      oc[n] = (oc[n] || 0) + 1;
-    });
-    return Object.entries(oc)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([objection, count]) => ({ objection, count }));
-  }, [aiObjections, range]);
 
   const exportCSV = () => {
     const headers = ['Company', 'Contact', 'Outcome', 'Notes', 'Opener', 'Path', 'Date'];
@@ -540,99 +480,20 @@ export default function StatsDashboard({ callLogs, aiObjections, tree }) {
         <FlowDiagram tree={tree} filteredLogs={filteredLogs} />
       </div>
 
-      {totalCalls > 0 && (
-        <>
-          {/* Opener comparison + Outcome breakdown */}
-          <div className="stats-row">
-            {openerStats.length > 0 && (
-              <div className="chart-card">
-                <h3>Opener comparison</h3>
-                <div className="opener-table">
-                  {openerStats.map(o => (
-                    <div key={o.id} className="opener-row">
-                      <div className="opener-name">{o.name}</div>
-                      <div className="opener-meta">
-                        <span>{o.total} calls</span>
-                        <span
-                          className="opener-conv"
-                          style={{ color: o.convRate > 0 ? '#16a34a' : '#6b7280' }}
-                        >
-                          {o.convRate}% conv
-                        </span>
-                      </div>
-                      <div className="opener-bar-bg">
-                        <div className="opener-bar-s" style={{ width: `${o.convRate}%` }} />
-                        <div className="opener-bar-p" style={{ width: `${Math.max(0, o.posRate - o.convRate)}%` }} />
-                      </div>
-                    </div>
-                  ))}
-                  <div className="opener-legend">
-                    <span><span className="legend-dot" style={{ background: '#16a34a' }} /> Meeting / referral</span>
-                    <span><span className="legend-dot" style={{ background: '#2563eb' }} /> Follow-up</span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {outcomeData.length > 0 && (
-              <div className="chart-card">
-                <h3>Outcomes</h3>
-                <div className="outcome-list">
-                  {outcomeData.map((o, i) => (
-                    <div key={o.name} className="outcome-row">
-                      <div className="outcome-label">
-                        <span className="outcome-dot" style={{ background: outcomeColor(o.name, i) }} />
-                        {o.name}
-                      </div>
-                      <div className="outcome-bar-bg">
-                        <div
-                          className="outcome-bar-fill"
-                          style={{
-                            width: `${pct(o.value, totalCalls)}%`,
-                            background: outcomeColor(o.name, i),
-                          }}
-                        />
-                      </div>
-                      <span className="outcome-count">{o.value}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Calls over time + Top objections */}
-          <div className="stats-row">
-            {callsOverTime.length > 0 && (
-              <div className="chart-card">
-                <h3>Calls over time</h3>
-                <ResponsiveContainer width="100%" height={180}>
-                  <BarChart data={callsOverTime}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                    <XAxis dataKey="date" fontSize={11} tick={{ fill: '#6b7280' }} />
-                    <YAxis allowDecimals={false} fontSize={11} tick={{ fill: '#6b7280' }} width={24} />
-                    <Tooltip />
-                    <Bar dataKey="count" fill="#2563eb" radius={[3, 3, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-
-            {commonObjections.length > 0 && (
-              <div className="chart-card">
-                <h3>Top objections (AI assist)</h3>
-                <div className="objection-list">
-                  {commonObjections.map((o, i) => (
-                    <div key={i} className="objection-row">
-                      <span className="objection-count">{o.count}&times;</span>
-                      <span className="objection-text">{o.objection}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </>
+      {totalCalls > 0 && callsOverTime.length > 0 && (
+        <div className="chart-card">
+          <h3>Call performance over time</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={callsOverTime}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis dataKey="date" fontSize={11} tick={{ fill: '#6b7280' }} />
+              <YAxis allowDecimals={false} fontSize={11} tick={{ fill: '#6b7280' }} width={24} />
+              <Tooltip />
+              <Bar dataKey="booked" name="Meeting booked" stackId="a" fill="#16a34a" radius={[0, 0, 0, 0]} />
+              <Bar dataKey="other" name="Not booked" stackId="a" fill="#d1d5db" radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
       )}
     </div>
   );
