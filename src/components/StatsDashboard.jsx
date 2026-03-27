@@ -232,11 +232,33 @@ function buildFlowElements(tree, logs) {
     exitNode.x = centerX + DAGRE_NODE_W + 120;
   }
 
-  const notIntNode = g.node('not_interested');
-  if (notIntNode && legacyNode) {
-    notIntNode.y = legacyNode.y + DAGRE_NODE_H + ranksep;
-    notIntNode.x = centerX + DAGRE_NODE_W + 120;
+  // Position outcome nodes: non-exit centered below legacy pitch, exits to the right
+  const outcomeY = (legacyNode ? legacyNode.y : reachedNode ? reachedNode.y : 0) + DAGRE_NODE_H + ranksep;
+  const outcomeIds = nodeShells
+    .filter(n => n.data.endState && !EXIT_IDS.has(n.id))
+    .map(n => n.id)
+    .filter(id => g.node(id));
+  const exitOutcomeIds = nodeShells
+    .filter(n => n.data.endState && EXIT_IDS.has(n.id))
+    .map(n => n.id)
+    .filter(id => g.node(id));
+
+  if (outcomeIds.length > 0) {
+    const totalW = outcomeIds.length * DAGRE_NODE_W + (outcomeIds.length - 1) * 40;
+    const startX = centerX - totalW / 2 + DAGRE_NODE_W / 2;
+    outcomeIds.forEach((id, i) => {
+      const node = g.node(id);
+      node.y = outcomeY;
+      node.x = startX + i * (DAGRE_NODE_W + 40);
+    });
   }
+
+  const exitX = centerX + DAGRE_NODE_W + 120;
+  exitOutcomeIds.forEach((id, i) => {
+    const node = g.node(id);
+    node.y = outcomeY;
+    node.x = exitX + i * (DAGRE_NODE_W + 30);
+  });
 
   // Bake positions into nodes
   const layoutedNodes = nodeShells.map(node => {
