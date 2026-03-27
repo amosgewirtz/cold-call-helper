@@ -61,7 +61,7 @@ const initialTree = {
   pitch_rm: {
     id: 'pitch_rm',
     label: 'Relationship manager',
-    scriptText: "So the biggest thing that sets us apart is the service. When you call us, you get me. Same person, every time. No 1-800 number, no ticket queue. I'm your relationship manager from day one, and I'm the one calling you right now.",
+    scriptText: "We're a local, family-owned bank that's expanding and our whole model is built around dedicated customer service. When you call us, you get me, Antonette. It'll be me, every time. I'm your relationship manager from day one.",
     options: [
       { buttonLabel: 'Booked meeting', targetNodeId: 'book_meeting' },
       { buttonLabel: 'Got referral', targetNodeId: 'got_referral' },
@@ -73,7 +73,7 @@ const initialTree = {
   pitch_accounting: {
     id: 'pitch_accounting',
     label: 'Accounting integration',
-    scriptText: "So beyond the cashback, the thing our customers love most is how it fits into their workflow. Every transaction auto-syncs to QuickBooks or Xero in real time. No more end-of-month reconciliation headaches, no CSV uploads, no chasing receipts. Your books stay clean without the busywork.",
+    scriptText: "We're a community, family-owned bank and we're reaching out to local businesses because we just launched a concierge business checking account with some features you won't get from the big banks. The one our customers love most is the accounting integration. Every transaction auto-syncs to QuickBooks or Xero in real time. No more end-of-month reconciliation headaches, no CSV uploads, no chasing receipts. Your books stay clean without the busywork. And the account is currently free.",
     options: [
       { buttonLabel: 'Booked meeting', targetNodeId: 'book_meeting' },
       { buttonLabel: 'Got referral', targetNodeId: 'got_referral' },
@@ -85,7 +85,7 @@ const initialTree = {
   pitch_spend: {
     id: 'pitch_spend',
     label: 'Spend controls / multi-card',
-    scriptText: "So one thing that's really useful for teams is the card management. You can spin up cards for every team or department, set per-card spend limits, and kill a card instantly. Full visibility into who's spending what, without waiting for a statement.",
+    scriptText: "We're a community, family-owned bank that's expanding and we built a debit card specifically for teams that need control over their spend. You can spin up cards for every team or department, set per-card spend limits, and kill a card instantly. Full visibility into who's spending what, without waiting for a statement.",
     options: [
       { buttonLabel: 'Booked meeting', targetNodeId: 'book_meeting' },
       { buttonLabel: 'Got referral', targetNodeId: 'got_referral' },
@@ -97,7 +97,7 @@ const initialTree = {
   pitch_bundle: {
     id: 'pitch_bundle',
     label: 'Bundle',
-    scriptText: "Let me just give you the full picture. 1.5% cashback on all business spend, including taxes and utilities. Auto-sync to QuickBooks or Xero. Dedicated relationship manager you can actually call. And spend controls across unlimited cards. That's the whole package.",
+    scriptText: "We're a local, family-owned bank that's currently expanding. Our biggest perk right is unlimited 1.5% cashback on all business spend with our debit card, including taxes and utilities. Auto-sync to QuickBooks or Xero. Dedicated relationship manager you can actually call. And spend controls across unlimited cards. That's the whole package.",
     options: [
       { buttonLabel: 'Booked meeting', targetNodeId: 'book_meeting' },
       { buttonLabel: 'Got referral', targetNodeId: 'got_referral' },
@@ -109,7 +109,7 @@ const initialTree = {
   pitch_antibank: {
     id: 'pitch_antibank',
     label: 'Anti-big-bank',
-    scriptText: "Let me put it this way. You're probably getting zero cashback, a generic 1-800 support line, and manual reconciliation. We give you 1.5% back on everything, a dedicated point of contact, and direct accounting integration. Same money, better experience.",
+    scriptText: "We're a local bank that's expanding and we're going after the stuff the big banks don't bother with. We give you 1.5% back on everything with our debit card (which means you can get money back on taxes), a dedicated point of contact (which would be me), and direct accounting integration.",
     options: [
       { buttonLabel: 'Booked meeting', targetNodeId: 'book_meeting' },
       { buttonLabel: 'Got referral', targetNodeId: 'got_referral' },
