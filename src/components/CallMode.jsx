@@ -102,7 +102,7 @@ export default function CallMode({ tree, addCallLog, addAiObjection, apiKey, sav
         </div>
       )}
 
-      {node?.isOpenerChoice ? (
+      {(node?.isOpenerChoice || node?.isPitchChoice) ? (
         <>
           <div className="opener-choice-header">{node.scriptText}</div>
           <div className="opener-choice-grid">

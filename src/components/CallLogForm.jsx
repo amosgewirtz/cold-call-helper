@@ -4,9 +4,12 @@ const OUTCOMES = [
   'Booked meeting',
   'Got referral',
   'Sent email/follow up',
+  'Follow up later',
   'Not interested',
-  'No answer/voicemail',
+  'Hard no / hang up',
   'Gatekeeper blocked',
+  'Wrong person',
+  'No answer / voicemail',
 ];
 
 export default function CallLogForm({ path, tree, endType, onSubmit, onSkip }) {
@@ -14,11 +17,18 @@ export default function CallLogForm({ path, tree, endType, onSubmit, onSkip }) {
   const [contactName, setContactName] = useState('');
   const [outcome, setOutcome] = useState(() => {
     const lastNode = tree[path[path.length - 1]];
-    if (lastNode?.endType === 'success') {
-      return lastNode.id === 'book_meeting' ? 'Booked meeting' : 'Got referral';
+    if (!lastNode?.endState) return 'Not interested';
+    switch (lastNode.id) {
+      case 'book_meeting': return 'Booked meeting';
+      case 'got_referral': return 'Got referral';
+      case 'send_email': return 'Sent email/follow up';
+      case 'follow_up': return 'Follow up later';
+      case 'not_interested': return 'Not interested';
+      default:
+        if (lastNode.endType === 'success') return 'Booked meeting';
+        if (lastNode.endType === 'neutral') return 'Sent email/follow up';
+        return 'Not interested';
     }
-    if (lastNode?.endType === 'neutral') return 'Sent email/follow up';
-    return 'Not interested';
   });
   const [notes, setNotes] = useState('');
 

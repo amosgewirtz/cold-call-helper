@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-export default function SettingsModal({ apiKey, setApiKey, onClose }) {
+export default function SettingsModal({ apiKey, setApiKey, onResetTree, onClose }) {
   const [key, setKey] = useState(apiKey);
 
   const handleSave = () => {
@@ -27,6 +27,20 @@ export default function SettingsModal({ apiKey, setApiKey, onClose }) {
             />
             <span className="form-hint">Required for AI assist. Your key is stored locally and never sent to any server except Anthropic's API.</span>
           </label>
+          {onResetTree && (
+            <label className="form-label" style={{ marginTop: '1rem' }}>
+              Script tree
+              <span className="form-hint">Replace the current script tree with the built-in default (new funnel with pitch variants).</span>
+              <button
+                type="button"
+                className="cancel-btn"
+                style={{ marginTop: '0.5rem', color: '#ef4444', borderColor: '#ef4444' }}
+                onClick={() => { if (window.confirm('Reset script to the default tree? This cannot be undone.')) { onResetTree(); onClose(); } }}
+              >
+                Reset script to default
+              </button>
+            </label>
+          )}
           <div className="settings-actions">
             <button className="save-btn" onClick={handleSave}>Save</button>
             <button className="cancel-btn" onClick={onClose}>Cancel</button>

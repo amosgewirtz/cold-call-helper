@@ -1,28 +1,310 @@
-import { useState, useMemo } from 'react';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid, Legend } from 'recharts';
+import { useState, useMemo, memo, useCallback } from 'react';
+import {
+  ReactFlow,
+  Handle,
+  Position,
+} from '@xyflow/react';
+import dagre from 'dagre';
+import '@xyflow/react/dist/style.css';
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+} from 'recharts';
 
-const COLORS = ['#16a34a', '#2563eb', '#f59e0b', '#ef4444', '#8b5cf6', '#6b7280', '#ec4899', '#14b8a6'];
-const OPENER_IDS = ['opener_a', 'opener_b', 'opener_c', 'opener_d'];
+const OUTCOME_COLORS = {
+  'Booked meeting': '#16a34a',
+  'Got referral': '#22c55e',
+  'Sent email/follow up': '#2563eb',
+  'Not interested': '#ef4444',
+  'Left voicemail': '#f59e0b',
+  'No answer': '#6b7280',
+  'Wrong number': '#9ca3af',
+  'Gatekeeper blocked': '#6b7280',
+};
+const FALLBACK_COLORS = ['#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#6366f1'];
+const OPENER_IDS = ['opener_a', 'opener_b', 'opener_c'];
 const SUCCESS_OUTCOMES = ['Booked meeting', 'Got referral'];
-const POSITIVE_OUTCOMES = ['Booked meeting', 'Got referral', 'Sent email/follow up'];
+const POSITIVE_OUTCOMES = ['Booked meeting', 'Got referral', 'Sent email/follow up', 'Follow up later'];
 const RANGES = { '7d': 7, '30d': 30, all: Infinity };
 
-function isSuccess(outcome) {
-  return SUCCESS_OUTCOMES.includes(outcome);
+const DAGRE_NODE_W = 162;
+const DAGRE_NODE_H = 58;
+
+function isSuccess(o) { return SUCCESS_OUTCOMES.includes(o); }
+function isPositive(o) { return POSITIVE_OUTCOMES.includes(o); }
+function pct(n, t) { return t === 0 ? 0 : Math.round((n / t) * 100); }
+function getOpenerFromPath(p) { return p?.find(id => OPENER_IDS.includes(id)) || null; }
+
+function outcomeColor(name, idx) {
+  return OUTCOME_COLORS[name] || FALLBACK_COLORS[idx % FALLBACK_COLORS.length];
 }
 
-function isPositive(outcome) {
-  return POSITIVE_OUTCOMES.includes(outcome);
+/* ─── Legacy path migration ─── */
+
+const NEW_PITCH_IDS = new Set([
+  'pitch_rm', 'pitch_accounting', 'pitch_spend', 'pitch_bundle', 'pitch_antibank',
+]);
+
+const LEGACY_OUTCOME_MAP = {
+  book_meeting: 'book_meeting',
+  got_referral: 'got_referral',
+  follow_up_later: 'follow_up',
+  send_something: 'send_email',
+  hard_no: 'not_interested',
+  call_over: 'not_interested',
+  dont_use_cards: 'not_interested',
+};
+
+const LEGACY_NO_PITCH_IDS = new Set([
+  'hard_no', 'gatekeeper', 'call_over', 'not_my_area',
+]);
+
+function mapLegacyPath(path) {
+  if (!path || path.length === 0) return path;
+  if (path.some(id => NEW_PITCH_IDS.has(id) || id === 'choose_pitch' || id === 'no_pitch')) {
+    return path;
+  }
+
+  const opener = path.find(id => OPENER_IDS.includes(id));
+  if (!opener) return path;
+
+  const reachedPitch = path.includes('pitch');
+  const lastStep = path[path.length - 1];
+  const mappedOutcome = LEGACY_OUTCOME_MAP[lastStep] || 'not_interested';
+
+  const newPath = ['choose_opener', opener];
+
+  if (reachedPitch) {
+    newPath.push('choose_pitch', 'pitch_legacy', mappedOutcome);
+  } else {
+    newPath.push('no_pitch');
+  }
+
+  return newPath;
 }
 
-function getOpenerFromPath(path) {
-  return path?.find(id => OPENER_IDS.includes(id)) || null;
+function centerHeavyReorder(items) {
+  const n = items.length;
+  if (n <= 1) return items;
+  const result = new Array(n);
+  let li = 0, ri = n - 1;
+  for (let i = n - 1; i >= 0; i--) {
+    if ((n - 1 - i) % 2 === 0) result[li++] = items[i];
+    else result[ri--] = items[i];
+  }
+  return result;
 }
 
-function pct(n, total) {
-  if (total === 0) return 0;
-  return Math.round((n / total) * 100);
+/* ─── React Flow custom node ─── */
+
+const StatsNode = memo(function StatsNode({ data }) {
+  let cls = 'flow-node';
+  if (data.isRoot) cls += ' flow-node-root';
+  else if (data.endState) {
+    cls += data.endType === 'success' ? ' flow-node-success'
+         : data.endType === 'neutral' ? ' flow-node-neutral'
+         : ' flow-node-dead';
+  } else if (data.label === 'Pre-update pitch') cls += ' flow-node-legacy';
+  else if (data.hasCalls && data.total === 0) cls += ' flow-node-zero';
+  else if (data.convRate >= 20) cls += ' flow-node-hot';
+  else if (data.convRate > 0) cls += ' flow-node-warm';
+
+  return (
+    <div className={cls}>
+      <Handle type="target" position={Position.Top} isConnectable={false} />
+      <div className="flow-node-label">{data.label}</div>
+      {data.hasCalls && (
+        <div className="flow-node-stats">
+          {data.total > 0 ? `${data.total}` : '\u2014'}
+        </div>
+      )}
+      <Handle type="source" position={Position.Bottom} isConnectable={false} />
+    </div>
+  );
+});
+
+const nodeTypes = { stats: StatsNode };
+
+/* ─── Build React Flow elements — aggregated funnel ─── */
+
+const STATS_LABELS = {
+  choose_pitch: 'Reached pitch',
+  no_pitch: "Didn't reach pitch",
+  pitch_legacy: 'Legacy pitch',
+};
+
+function buildFlowElements(tree, logs) {
+  if (logs.length === 0) return null;
+
+  // Count how many calls pass through each node and each edge transition
+  const nodeCounts = {};
+  const edgeCounts = {};
+
+  logs.forEach(log => {
+    if (!log.path || log.path.length === 0) return;
+    const mapped = mapLegacyPath(log.path);
+
+    for (const id of mapped) {
+      nodeCounts[id] = (nodeCounts[id] || 0) + 1;
+    }
+    for (let i = 0; i < mapped.length - 1; i++) {
+      const key = `${mapped[i]}__${mapped[i + 1]}`;
+      edgeCounts[key] = (edgeCounts[key] || 0) + 1;
+    }
+  });
+
+  // One React Flow node per unique funnel stage that had calls
+  const nodes = [];
+  for (const [id, count] of Object.entries(nodeCounts)) {
+    const tn = tree[id];
+    nodes.push({
+      id,
+      type: 'stats',
+      position: { x: 0, y: 0 },
+      data: {
+        label: STATS_LABELS[id] || tn?.label || id,
+        total: count,
+        endState: !!tn?.endState,
+        endType: tn?.endType,
+        isRoot: !!tn?.isOpenerChoice,
+        hasCalls: true,
+      },
+    });
+  }
+
+  // One React Flow edge per unique transition
+  let maxFlow = 1;
+  const edges = [];
+  for (const [key, flow] of Object.entries(edgeCounts)) {
+    const [source, target] = key.split('__');
+    if (!nodeCounts[source] || !nodeCounts[target]) continue;
+    if (flow > maxFlow) maxFlow = flow;
+    edges.push({
+      id: `e-${source}-${target}`,
+      source,
+      target,
+      type: 'smoothstep',
+      style: {
+        strokeWidth: 1.5 + (flow / maxFlow) * 4,
+        stroke: '#64748b',
+        opacity: 0.55,
+      },
+    });
+  }
+
+  // Dagre layout
+  const g = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
+  g.setGraph({ rankdir: 'TB', nodesep: 50, ranksep: 70, marginx: 20, marginy: 20 });
+
+  nodes.forEach(node => {
+    g.setNode(node.id, { width: DAGRE_NODE_W, height: DAGRE_NODE_H });
+  });
+  edges.forEach(edge => {
+    g.setEdge(edge.source, edge.target);
+  });
+
+  dagre.layout(g);
+
+  // Force openers to the same rank
+  const root = Object.values(tree).find(n => n.isOpenerChoice);
+  if (root) {
+    const opIds = (root.options || []).map(o => o.targetNodeId).filter(id => nodeCounts[id]);
+    if (opIds.length > 1) {
+      const minY = Math.min(...opIds.map(id => g.node(id).y));
+      opIds.forEach(id => { g.node(id).y = minY; });
+    }
+  }
+
+  // Reorder siblings within each rank: heaviest nodes near center
+  const rankGroups = {};
+  nodes.forEach(node => {
+    const pos = g.node(node.id);
+    const rankKey = Math.round(pos.y);
+    if (!rankGroups[rankKey]) rankGroups[rankKey] = [];
+    rankGroups[rankKey].push({ id: node.id, total: node.data.total, x: pos.x });
+  });
+  Object.values(rankGroups).forEach(group => {
+    if (group.length <= 1) return;
+    const sorted = [...group].sort((a, b) => b.total - a.total);
+    const reordered = centerHeavyReorder(sorted);
+    const xSlots = group.map(n => n.x).sort((a, b) => a - b);
+    reordered.forEach((item, i) => { g.node(item.id).x = xSlots[i]; });
+  });
+
+  const layoutedNodes = nodes.map(node => {
+    const pos = g.node(node.id);
+    return {
+      ...node,
+      targetPosition: 'top',
+      sourcePosition: 'bottom',
+      position: {
+        x: pos.x - DAGRE_NODE_W / 2,
+        y: pos.y - DAGRE_NODE_H / 2,
+      },
+    };
+  });
+
+  return { nodes: layoutedNodes, edges };
 }
+
+/* ─── Flow diagram component ─── */
+
+function FlowDiagram({ tree, filteredLogs }) {
+  const [hoveredId, setHoveredId] = useState(null);
+
+  const flowData = useMemo(
+    () => buildFlowElements(tree, filteredLogs),
+    [tree, filteredLogs]
+  );
+
+  const handleNodeEnter = useCallback((_, node) => setHoveredId(node.id), []);
+  const handleNodeLeave = useCallback(() => setHoveredId(null), []);
+
+  const displayEdges = useMemo(() => {
+    if (!flowData) return [];
+    const { edges } = flowData;
+    if (!hoveredId) return edges;
+    return edges.map(e => ({
+      ...e,
+      style: {
+        ...e.style,
+        opacity: (e.source === hoveredId || e.target === hoveredId) ? 0.85 : 0.06,
+        transition: 'opacity 0.15s',
+      },
+    }));
+  }, [flowData, hoveredId]);
+
+  if (!flowData) {
+    return (
+      <div className="flow-container flow-empty">
+        <p>No call data yet. Start making calls to see the flow diagram.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flow-container">
+      <ReactFlow
+        nodes={flowData.nodes}
+        edges={displayEdges}
+        nodeTypes={nodeTypes}
+        fitView
+        fitViewOptions={{ padding: 0.15 }}
+        nodesDraggable={false}
+        nodesConnectable={false}
+        elementsSelectable={false}
+        zoomOnScroll={true}
+        panOnDrag={true}
+        minZoom={0.3}
+        maxZoom={1.5}
+        onNodeMouseEnter={handleNodeEnter}
+        onNodeMouseLeave={handleNodeLeave}
+        proOptions={{ hideAttribution: true }}
+      />
+    </div>
+  );
+}
+
+/* ─── Main dashboard ─── */
 
 export default function StatsDashboard({ callLogs, aiObjections, tree }) {
   const [range, setRange] = useState('all');
@@ -33,133 +315,64 @@ export default function StatsDashboard({ callLogs, aiObjections, tree }) {
     return callLogs.filter(l => l.timestamp >= cutoff);
   }, [callLogs, range]);
 
-  const conversionRate = useMemo(() => {
-    if (filteredLogs.length === 0) return 0;
-    return pct(filteredLogs.filter(l => isSuccess(l.outcome)).length, filteredLogs.length);
-  }, [filteredLogs]);
+  const totalCalls = filteredLogs.length;
+  const meetings = useMemo(() => filteredLogs.filter(l => l.outcome === 'Booked meeting').length, [filteredLogs]);
+  const referrals = useMemo(() => filteredLogs.filter(l => l.outcome === 'Got referral').length, [filteredLogs]);
+  const conversionRate = pct(meetings + referrals, totalCalls);
 
-  // --- Opener performance ---
   const openerStats = useMemo(() => {
-    const stats = {};
-    OPENER_IDS.forEach(id => { stats[id] = { total: 0, success: 0, positive: 0 }; });
-
+    const s = {};
+    OPENER_IDS.forEach(id => { s[id] = { total: 0, success: 0, positive: 0 }; });
     filteredLogs.forEach(l => {
-      const opener = getOpenerFromPath(l.path);
-      if (!opener || !stats[opener]) return;
-      stats[opener].total++;
-      if (isSuccess(l.outcome)) stats[opener].success++;
-      if (isPositive(l.outcome)) stats[opener].positive++;
+      const op = getOpenerFromPath(l.path);
+      if (!op || !s[op]) return;
+      s[op].total++;
+      if (isSuccess(l.outcome)) s[op].success++;
+      if (isPositive(l.outcome)) s[op].positive++;
     });
-
     return OPENER_IDS
       .map(id => ({
         id,
-        name: tree[id]?.label?.replace('Opener ', '') || id,
-        shortName: tree[id]?.label?.replace('Opener ', '').split(':')[0] || id,
-        total: stats[id].total,
-        successRate: pct(stats[id].success, stats[id].total),
-        positiveRate: pct(stats[id].positive, stats[id].total),
-        meetings: stats[id].success,
-        positive: stats[id].positive,
+        name: tree[id]?.label || id,
+        total: s[id].total,
+        convRate: pct(s[id].success, s[id].total),
+        posRate: pct(s[id].positive, s[id].total),
       }))
-      .filter(o => o.total > 0);
+      .filter(o => o.total > 0)
+      .sort((a, b) => b.convRate - a.convRate || b.posRate - a.posRate);
   }, [filteredLogs, tree]);
 
-  const openerChartData = useMemo(() => {
-    return openerStats.map(o => ({
-      name: o.shortName,
-      'Conversion %': o.successRate,
-      'Positive %': o.positiveRate,
-      calls: o.total,
-    }));
-  }, [openerStats]);
-
-  // --- Node-level conversion (which branches succeed vs fail) ---
-  const branchStats = useMemo(() => {
-    const stats = {};
-
-    filteredLogs.forEach(l => {
-      l.path.forEach(nodeId => {
-        if (nodeId === 'choose_opener') return;
-        if (!stats[nodeId]) stats[nodeId] = { total: 0, success: 0, positive: 0 };
-        stats[nodeId].total++;
-        if (isSuccess(l.outcome)) stats[nodeId].success++;
-        if (isPositive(l.outcome)) stats[nodeId].positive++;
-      });
-    });
-
-    return Object.entries(stats)
-      .filter(([, s]) => s.total >= 2)
-      .map(([id, s]) => ({
-        id,
-        label: tree[id]?.label || id,
-        total: s.total,
-        successRate: pct(s.success, s.total),
-        positiveRate: pct(s.positive, s.total),
-      }))
-      .sort((a, b) => b.total - a.total);
-  }, [filteredLogs, tree]);
-
-  // --- Winning vs losing full paths ---
-  const pathAnalysis = useMemo(() => {
-    const pathMap = {};
-    filteredLogs.forEach(l => {
-      const key = l.path.map(id => tree[id]?.label || id).join(' › ');
-      if (!pathMap[key]) pathMap[key] = { path: key, total: 0, success: 0, positive: 0, outcomes: {} };
-      pathMap[key].total++;
-      if (isSuccess(l.outcome)) pathMap[key].success++;
-      if (isPositive(l.outcome)) pathMap[key].positive++;
-      pathMap[key].outcomes[l.outcome] = (pathMap[key].outcomes[l.outcome] || 0) + 1;
-    });
-
-    const paths = Object.values(pathMap)
-      .filter(p => p.total >= 1)
-      .map(p => ({
-        ...p,
-        successRate: pct(p.success, p.total),
-        positiveRate: pct(p.positive, p.total),
-        topOutcome: Object.entries(p.outcomes).sort((a, b) => b[1] - a[1])[0]?.[0],
-      }));
-
-    const winning = [...paths].sort((a, b) => b.successRate - a.successRate || b.total - a.total).slice(0, 5);
-    const losing = [...paths]
-      .filter(p => p.successRate === 0 && p.total >= 1)
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 5);
-
-    return { winning, losing };
-  }, [filteredLogs, tree]);
-
-  // --- Outcome breakdown ---
   const outcomeData = useMemo(() => {
-    const counts = {};
-    filteredLogs.forEach(l => { counts[l.outcome] = (counts[l.outcome] || 0) + 1; });
-    return Object.entries(counts).map(([name, value]) => ({ name, value }));
+    const c = {};
+    filteredLogs.forEach(l => { c[l.outcome] = (c[l.outcome] || 0) + 1; });
+    return Object.entries(c)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
   }, [filteredLogs]);
 
-  // --- Common objections ---
-  const commonObjections = useMemo(() => {
-    const objCounts = {};
-    const filtered = range === 'all' ? aiObjections : aiObjections.filter(o => o.timestamp >= Date.now() - RANGES[range] * 86400000);
-    filtered.forEach(o => {
-      const normalized = o.objection.toLowerCase().trim();
-      objCounts[normalized] = (objCounts[normalized] || 0) + 1;
-    });
-    return Object.entries(objCounts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10)
-      .map(([objection, count]) => ({ objection, count }));
-  }, [aiObjections, range]);
-
-  // --- Calls over time ---
   const callsOverTime = useMemo(() => {
-    const dayCounts = {};
+    const dc = {};
     filteredLogs.forEach(l => {
       const day = new Date(l.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      dayCounts[day] = (dayCounts[day] || 0) + 1;
+      dc[day] = (dc[day] || 0) + 1;
     });
-    return Object.entries(dayCounts).map(([date, count]) => ({ date, count }));
+    return Object.entries(dc).map(([date, count]) => ({ date, count }));
   }, [filteredLogs]);
+
+  const commonObjections = useMemo(() => {
+    const oc = {};
+    const filtered = range === 'all'
+      ? aiObjections
+      : aiObjections.filter(o => o.timestamp >= Date.now() - RANGES[range] * 86400000);
+    filtered.forEach(o => {
+      const n = o.objection.toLowerCase().trim();
+      oc[n] = (oc[n] || 0) + 1;
+    });
+    return Object.entries(oc)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([objection, count]) => ({ objection, count }));
+  }, [aiObjections, range]);
 
   const exportCSV = () => {
     const headers = ['Company', 'Contact', 'Outcome', 'Notes', 'Opener', 'Path', 'Date'];
@@ -187,6 +400,7 @@ export default function StatsDashboard({ callLogs, aiObjections, tree }) {
 
   return (
     <div className="stats-container">
+      {/* Header */}
       <div className="stats-header">
         <h2>Dashboard</h2>
         <div className="stats-controls">
@@ -207,187 +421,136 @@ export default function StatsDashboard({ callLogs, aiObjections, tree }) {
         </div>
       </div>
 
+      {/* KPI Cards */}
       <div className="stats-cards">
         <div className="stat-card">
-          <div className="stat-value">{filteredLogs.length}</div>
+          <div className="stat-value">{totalCalls}</div>
           <div className="stat-label">Total calls</div>
         </div>
         <div className="stat-card">
-          <div className="stat-value" style={{ color: '#16a34a' }}>{conversionRate}%</div>
+          <div className="stat-value" style={{
+            color: conversionRate > 0 ? '#16a34a' : totalCalls > 0 ? '#ef4444' : undefined,
+          }}>
+            {conversionRate}%
+          </div>
           <div className="stat-label">Conversion rate</div>
         </div>
         <div className="stat-card">
-          <div className="stat-value">{filteredLogs.filter(l => l.outcome === 'Booked meeting').length}</div>
+          <div className="stat-value" style={{ color: meetings > 0 ? '#16a34a' : undefined }}>
+            {meetings}
+          </div>
           <div className="stat-label">Meetings booked</div>
         </div>
         <div className="stat-card">
-          <div className="stat-value">{filteredLogs.filter(l => l.outcome === 'Got referral').length}</div>
+          <div className="stat-value" style={{ color: referrals > 0 ? '#16a34a' : undefined }}>
+            {referrals}
+          </div>
           <div className="stat-label">Referrals</div>
         </div>
       </div>
 
-      {filteredLogs.length === 0 ? (
-        <div className="stats-empty">
-          <p>No call data yet. Start making calls to see stats here.</p>
-        </div>
-      ) : (
-        <div className="stats-charts">
+      {/* Flow Diagram — always visible */}
+      <div className="chart-card stats-flow-card">
+        <h3>Call flow</h3>
+        <p className="flow-subtitle">
+          Hover a node to highlight its edges. Thicker edges = more calls. Scroll to zoom, drag to pan.
+        </p>
+        <FlowDiagram tree={tree} filteredLogs={filteredLogs} />
+      </div>
 
-          {/* Opener performance — the hero chart */}
-          {openerStats.length > 0 && (
-            <div className="chart-card full-width">
-              <h3>Opener performance</h3>
-              <div className="opener-stats-row">
-                <div className="opener-chart-area">
-                  <ResponsiveContainer width="100%" height={260}>
-                    <BarChart data={openerChartData} barGap={4}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                      <XAxis dataKey="name" fontSize={12} />
-                      <YAxis unit="%" domain={[0, 100]} fontSize={12} />
-                      <Tooltip
-                        formatter={(val, name) => [`${val}%`, name]}
-                        labelFormatter={(label) => {
-                          const match = openerChartData.find(d => d.name === label);
-                          return `${label} (${match?.calls || 0} calls)`;
-                        }}
-                      />
-                      <Legend />
-                      <Bar dataKey="Conversion %" fill="#16a34a" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="Positive %" fill="#2563eb" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="opener-breakdown">
+      {totalCalls > 0 && (
+        <>
+          {/* Opener comparison + Outcome breakdown */}
+          <div className="stats-row">
+            {openerStats.length > 0 && (
+              <div className="chart-card">
+                <h3>Opener comparison</h3>
+                <div className="opener-table">
                   {openerStats.map(o => (
-                    <div key={o.id} className="opener-stat-row">
-                      <div className="opener-stat-name">{o.name}</div>
-                      <div className="opener-stat-nums">
-                        <span className="opener-stat-calls">{o.total} calls</span>
-                        <span className="opener-stat-rate" style={{ color: o.successRate >= 20 ? '#16a34a' : o.successRate > 0 ? '#f59e0b' : '#ef4444' }}>
-                          {o.successRate}% conv
+                    <div key={o.id} className="opener-row">
+                      <div className="opener-name">{o.name}</div>
+                      <div className="opener-meta">
+                        <span>{o.total} calls</span>
+                        <span
+                          className="opener-conv"
+                          style={{ color: o.convRate > 0 ? '#16a34a' : '#6b7280' }}
+                        >
+                          {o.convRate}% conv
                         </span>
                       </div>
-                      <div className="opener-stat-bar">
-                        <div className="opener-bar-fill opener-bar-success" style={{ width: `${o.successRate}%` }} />
-                        <div className="opener-bar-fill opener-bar-positive" style={{ width: `${o.positiveRate - o.successRate}%` }} />
+                      <div className="opener-bar-bg">
+                        <div className="opener-bar-s" style={{ width: `${o.convRate}%` }} />
+                        <div className="opener-bar-p" style={{ width: `${Math.max(0, o.posRate - o.convRate)}%` }} />
                       </div>
                     </div>
                   ))}
                   <div className="opener-legend">
-                    <span><span className="legend-dot" style={{ background: '#16a34a' }} /> Meeting/referral</span>
+                    <span><span className="legend-dot" style={{ background: '#16a34a' }} /> Meeting / referral</span>
                     <span><span className="legend-dot" style={{ background: '#2563eb' }} /> Follow-up</span>
                   </div>
                 </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Winning paths */}
-          {pathAnalysis.winning.length > 0 && (
-            <div className="chart-card full-width">
-              <h3>Top converting paths</h3>
-              <div className="path-analysis-list">
-                {pathAnalysis.winning.map((p, i) => (
-                  <div key={i} className="path-analysis-row">
-                    <div className="path-analysis-header">
-                      <span className="path-analysis-rate" style={{ color: p.successRate > 0 ? '#16a34a' : '#6b7280' }}>
-                        {p.successRate}%
-                      </span>
-                      <span className="path-analysis-count">{p.total} call{p.total !== 1 ? 's' : ''}</span>
-                      <span className={`path-analysis-outcome ${isSuccess(p.topOutcome) ? 'outcome-success' : isPositive(p.topOutcome) ? 'outcome-positive' : 'outcome-negative'}`}>
-                        {p.topOutcome}
-                      </span>
-                    </div>
-                    <div className="path-analysis-trail">{p.path}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Losing paths */}
-          {pathAnalysis.losing.length > 0 && (
-            <div className="chart-card full-width">
-              <h3>Paths that never convert</h3>
-              <div className="path-analysis-list">
-                {pathAnalysis.losing.map((p, i) => (
-                  <div key={i} className="path-analysis-row path-analysis-losing">
-                    <div className="path-analysis-header">
-                      <span className="path-analysis-rate" style={{ color: '#ef4444' }}>0%</span>
-                      <span className="path-analysis-count">{p.total} call{p.total !== 1 ? 's' : ''}</span>
-                      <span className="path-analysis-outcome outcome-negative">{p.topOutcome}</span>
-                    </div>
-                    <div className="path-analysis-trail">{p.path}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Branch conversion — which nodes appear in successful calls */}
-          {branchStats.length > 0 && (
-            <div className="chart-card full-width">
-              <h3>Branch conversion rates</h3>
-              <p className="chart-subtitle">How often calls passing through each node end in a meeting or referral</p>
-              <div className="branch-stats-list">
-                {branchStats.map(b => (
-                  <div key={b.id} className="branch-stat-row">
-                    <div className="branch-stat-label">{b.label}</div>
-                    <div className="branch-stat-bar-wrap">
-                      <div className="branch-stat-bar">
-                        <div className="branch-bar-success" style={{ width: `${b.successRate}%` }} />
-                        <div className="branch-bar-positive" style={{ width: `${b.positiveRate - b.successRate}%` }} />
+            {outcomeData.length > 0 && (
+              <div className="chart-card">
+                <h3>Outcomes</h3>
+                <div className="outcome-list">
+                  {outcomeData.map((o, i) => (
+                    <div key={o.name} className="outcome-row">
+                      <div className="outcome-label">
+                        <span className="outcome-dot" style={{ background: outcomeColor(o.name, i) }} />
+                        {o.name}
                       </div>
+                      <div className="outcome-bar-bg">
+                        <div
+                          className="outcome-bar-fill"
+                          style={{
+                            width: `${pct(o.value, totalCalls)}%`,
+                            background: outcomeColor(o.name, i),
+                          }}
+                        />
+                      </div>
+                      <span className="outcome-count">{o.value}</span>
                     </div>
-                    <div className="branch-stat-nums">
-                      <span style={{ color: b.successRate >= 20 ? '#16a34a' : '#6b7280' }}>{b.successRate}%</span>
-                      <span className="branch-stat-total">{b.total}</span>
-                    </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
-
-          <div className="chart-card">
-            <h3>Outcome breakdown</h3>
-            <ResponsiveContainer width="100%" height={280}>
-              <PieChart>
-                <Pie data={outcomeData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={100} label={({ name, value }) => `${name}: ${value}`}>
-                  {outcomeData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
+            )}
           </div>
 
-          <div className="chart-card">
-            <h3>Calls over time</h3>
-            <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={callsOverTime}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="date" fontSize={12} />
-                <YAxis allowDecimals={false} fontSize={12} />
-                <Tooltip />
-                <Bar dataKey="count" fill="#2563eb" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-
-          {commonObjections.length > 0 && (
-            <div className="chart-card full-width">
-              <h3>Most common objections (AI assist)</h3>
-              <div className="common-paths">
-                {commonObjections.map((o, i) => (
-                  <div key={i} className="path-row">
-                    <span className="path-count">{o.count}×</span>
-                    <span className="path-trail">{o.objection}</span>
-                  </div>
-                ))}
+          {/* Calls over time + Top objections */}
+          <div className="stats-row">
+            {callsOverTime.length > 0 && (
+              <div className="chart-card">
+                <h3>Calls over time</h3>
+                <ResponsiveContainer width="100%" height={180}>
+                  <BarChart data={callsOverTime}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis dataKey="date" fontSize={11} tick={{ fill: '#6b7280' }} />
+                    <YAxis allowDecimals={false} fontSize={11} tick={{ fill: '#6b7280' }} width={24} />
+                    <Tooltip />
+                    <Bar dataKey="count" fill="#2563eb" radius={[3, 3, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+
+            {commonObjections.length > 0 && (
+              <div className="chart-card">
+                <h3>Top objections (AI assist)</h3>
+                <div className="objection-list">
+                  {commonObjections.map((o, i) => (
+                    <div key={i} className="objection-row">
+                      <span className="objection-count">{o.count}&times;</span>
+                      <span className="objection-text">{o.objection}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </>
       )}
     </div>
   );

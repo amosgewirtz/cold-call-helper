@@ -138,6 +138,7 @@ export default function App() {
         <SettingsModal
           apiKey={apiKey}
           setApiKey={setApiKey}
+          onResetTree={() => saveTreeVersion(initialTree, 'Reset to default script')}
           onClose={() => setShowSettings(false)}
         />
       )}
