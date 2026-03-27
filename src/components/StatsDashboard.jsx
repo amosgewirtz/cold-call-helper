@@ -91,7 +91,8 @@ const StatsNode = memo(function StatsNode({ data }) {
     cls += data.endType === 'success' ? ' flow-node-success'
          : data.endType === 'neutral' ? ' flow-node-neutral'
          : ' flow-node-dead';
-  } else if (data.label === 'Pre-update pitch') cls += ' flow-node-legacy';
+  } else if (data.isExit) cls += ' flow-node-exit';
+  else if (data.label === 'Pre-update pitch') cls += ' flow-node-legacy';
   else if (data.hasCalls && data.total === 0) cls += ' flow-node-zero';
   else if (data.convRate >= 20) cls += ' flow-node-hot';
   else if (data.convRate > 0) cls += ' flow-node-warm';
@@ -151,11 +152,14 @@ function buildFlowElements(tree, logs) {
     if (flow > maxFlow) maxFlow = flow;
   }
 
+  const EXIT_IDS = new Set(['no_pitch']);
+
   // One React Flow node per unique funnel stage, skip choose_opener (openers are the top row)
   const nodeShells = [];
   for (const id of Object.keys(globalNodeCounts)) {
     if (id === 'choose_opener') continue;
     const tn = tree[id];
+    const isExit = EXIT_IDS.has(id);
     nodeShells.push({
       id,
       type: 'stats',
@@ -166,18 +170,20 @@ function buildFlowElements(tree, logs) {
         endState: !!tn?.endState,
         endType: tn?.endType,
         isRoot: !!tn?.isOpenerChoice,
+        isExit,
         hasCalls: true,
         dimmed: false,
       },
     });
   }
 
-  // One edge per unique transition (only between rendered nodes)
+  // One edge per unique transition (only between rendered nodes), uniform thickness
   const nodeIdSet = new Set(nodeShells.map(n => n.id));
   const edgeShells = [];
   for (const [key, flow] of Object.entries(globalEdgeCounts)) {
     const [source, target] = key.split('__');
     if (!nodeIdSet.has(source) || !nodeIdSet.has(target)) continue;
+    const isExitEdge = EXIT_IDS.has(target);
     edgeShells.push({
       id: `e-${source}-${target}`,
       source,
@@ -185,9 +191,9 @@ function buildFlowElements(tree, logs) {
       flow,
       type: 'smoothstep',
       style: {
-        strokeWidth: 1.5 + (flow / maxFlow) * 4,
-        stroke: '#64748b',
-        opacity: 0.55,
+        strokeWidth: 2,
+        stroke: isExitEdge ? '#c0c4cc' : '#64748b',
+        opacity: isExitEdge ? 0.35 : 0.55,
       },
     });
   }
@@ -217,6 +223,14 @@ function buildFlowElements(tree, logs) {
         g.node(id).x = xSlots[i];
       });
     }
+  }
+
+  // Position "Didn't reach pitch" as an exit ramp to the right
+  const reachedNode = g.node('choose_pitch');
+  const exitNode = g.node('no_pitch');
+  if (reachedNode && exitNode) {
+    exitNode.y = reachedNode.y;
+    exitNode.x = reachedNode.x + DAGRE_NODE_W + 100;
   }
 
   // Bake positions into nodes
@@ -272,6 +286,8 @@ function FlowDiagram({ tree, filteredLogs }) {
       globalNodeCounts, globalEdgeCounts, maxFlow,
     } = flowData;
 
+    const EXIT_SET = new Set(['no_pitch']);
+
     if (!hoveredId) {
       const nodes = layoutedNodes.map(n => ({
         ...n,
@@ -280,9 +296,9 @@ function FlowDiagram({ tree, filteredLogs }) {
       const edges = edgeShells.map(e => ({
         ...e,
         style: {
-          strokeWidth: 1.5 + (e.flow / maxFlow) * 4,
-          stroke: '#64748b',
-          opacity: 0.55,
+          strokeWidth: 2,
+          stroke: EXIT_SET.has(e.target) ? '#c0c4cc' : '#64748b',
+          opacity: EXIT_SET.has(e.target) ? 0.35 : 0.55,
         },
       }));
       return { displayNodes: nodes, displayEdges: edges };
@@ -316,10 +332,10 @@ function FlowDiagram({ tree, filteredLogs }) {
       return {
         ...e,
         style: {
-          strokeWidth: flow > 0 ? 1.5 + (flow / maxFlow) * 4 : 1,
+          strokeWidth: 2,
           stroke: flow > 0 ? '#64748b' : '#d1d5db',
           opacity: flow > 0 ? 0.85 : 0.06,
-          transition: 'opacity 0.15s, stroke-width 0.15s',
+          transition: 'opacity 0.15s',
         },
       };
     });

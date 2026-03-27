@@ -1093,6 +1093,14 @@ body {
 .flow-node-zero .flow-node-label { color: #c9cdd4; }
 .flow-node-zero .flow-node-stats { color: #d1d5db; }
 
+.flow-node-exit {
+  background: #f3f4f6;
+  border-color: #d1d5db;
+  border-style: dashed;
+}
+.flow-node-exit .flow-node-label { color: #9ca3af; }
+.flow-node-exit .flow-node-stats { color: #9ca3af; }
+
 .flow-node-legacy {
   background: #f5f3ff;
   border-color: #c4b5fd;
