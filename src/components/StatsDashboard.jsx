@@ -225,12 +225,28 @@ function buildFlowElements(tree, logs) {
     }
   }
 
-  // Position "Didn't reach pitch" as an exit ramp to the right
+  // Center the main funnel spine under the middle opener
+  const root2 = Object.values(tree).find(n => n.isOpenerChoice);
+  const opIds2 = root2 ? (root2.options || []).map(o => o.targetNodeId).filter(id => globalNodeCounts[id]) : [];
+  const midOpener = opIds2.length > 0 ? g.node(opIds2[Math.floor(opIds2.length / 2)]) : null;
+  const centerX = midOpener ? midOpener.x : 0;
+  const ranksep = 70;
+
   const reachedNode = g.node('choose_pitch');
+  if (reachedNode) {
+    reachedNode.x = centerX;
+  }
+
+  const legacyNode = g.node('pitch_legacy');
+  if (legacyNode && reachedNode) {
+    legacyNode.x = centerX;
+    legacyNode.y = reachedNode.y + DAGRE_NODE_H + ranksep;
+  }
+
   const exitNode = g.node('no_pitch');
-  if (reachedNode && exitNode) {
+  if (exitNode && reachedNode) {
     exitNode.y = reachedNode.y;
-    exitNode.x = reachedNode.x + DAGRE_NODE_W + 100;
+    exitNode.x = centerX + DAGRE_NODE_W + 120;
   }
 
   // Bake positions into nodes
