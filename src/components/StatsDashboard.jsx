@@ -151,9 +151,10 @@ function buildFlowElements(tree, logs) {
     if (flow > maxFlow) maxFlow = flow;
   }
 
-  // One React Flow node per unique funnel stage (layout shell — counts applied later)
+  // One React Flow node per unique funnel stage, skip choose_opener (openers are the top row)
   const nodeShells = [];
   for (const id of Object.keys(globalNodeCounts)) {
+    if (id === 'choose_opener') continue;
     const tn = tree[id];
     nodeShells.push({
       id,
@@ -171,11 +172,12 @@ function buildFlowElements(tree, logs) {
     });
   }
 
-  // One edge per unique transition
+  // One edge per unique transition (only between rendered nodes)
+  const nodeIdSet = new Set(nodeShells.map(n => n.id));
   const edgeShells = [];
   for (const [key, flow] of Object.entries(globalEdgeCounts)) {
     const [source, target] = key.split('__');
-    if (!globalNodeCounts[source] || !globalNodeCounts[target]) continue;
+    if (!nodeIdSet.has(source) || !nodeIdSet.has(target)) continue;
     edgeShells.push({
       id: `e-${source}-${target}`,
       source,
@@ -369,8 +371,7 @@ export default function StatsDashboard({ callLogs, aiObjections, tree }) {
 
   const totalCalls = filteredLogs.length;
   const meetings = useMemo(() => filteredLogs.filter(l => l.outcome === 'Booked meeting').length, [filteredLogs]);
-  const referrals = useMemo(() => filteredLogs.filter(l => l.outcome === 'Got referral').length, [filteredLogs]);
-  const conversionRate = pct(meetings + referrals, totalCalls);
+  const conversionRate = pct(meetings, totalCalls);
 
   const openerStats = useMemo(() => {
     const s = {};
@@ -477,7 +478,7 @@ export default function StatsDashboard({ callLogs, aiObjections, tree }) {
       <div className="stats-cards">
         <div className="stat-card">
           <div className="stat-value">{totalCalls}</div>
-          <div className="stat-label">Total calls</div>
+          <div className="stat-label">Total calls answered</div>
         </div>
         <div className="stat-card">
           <div className="stat-value" style={{
@@ -492,12 +493,6 @@ export default function StatsDashboard({ callLogs, aiObjections, tree }) {
             {meetings}
           </div>
           <div className="stat-label">Meetings booked</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-value" style={{ color: referrals > 0 ? '#16a34a' : undefined }}>
-            {referrals}
-          </div>
-          <div className="stat-label">Referrals</div>
         </div>
       </div>
 
