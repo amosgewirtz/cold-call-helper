@@ -1,6 +1,7 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import useLocalStorage from './hooks/useLocalStorage';
 import { useFirestoreDoc, useFirestoreCollection, useFirestoreVersions } from './hooks/useFirestore';
+import { migrateLocalStorageToFirestore } from './migrate';
 import initialTree from './data/initialTree';
 import CallMode from './components/CallMode';
 import EditMode from './components/EditMode';
@@ -19,6 +20,14 @@ export default function App() {
   const [callLogs, addCallLogToDb, logsLoading] = useFirestoreCollection('callLogs');
   const [aiObjections, addObjectionToDb, objectionsLoading] = useFirestoreCollection('aiObjections');
   const [versions, addVersion, deleteVersion, versionsLoading] = useFirestoreVersions(50);
+
+  const migrated = useRef(false);
+  useEffect(() => {
+    if (!treeLoading && !migrated.current) {
+      migrated.current = true;
+      migrateLocalStorageToFirestore();
+    }
+  }, [treeLoading]);
   const [showVersions, setShowVersions] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [apiKey, setApiKey] = useLocalStorage('anthropicApiKey', '');
