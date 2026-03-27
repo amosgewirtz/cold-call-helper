@@ -233,13 +233,15 @@ function buildFlowElements(tree, logs) {
   }
 
   // Position outcome nodes: non-exit centered below legacy pitch, exits to the right
+  // Skip no_pitch — it's already positioned next to "Reached pitch"
+  const ALREADY_POSITIONED = new Set(['no_pitch', 'choose_pitch', 'pitch_legacy']);
   const outcomeY = (legacyNode ? legacyNode.y : reachedNode ? reachedNode.y : 0) + DAGRE_NODE_H + ranksep;
   const outcomeIds = nodeShells
-    .filter(n => n.data.endState && !EXIT_IDS.has(n.id))
+    .filter(n => n.data.endState && !EXIT_IDS.has(n.id) && !ALREADY_POSITIONED.has(n.id))
     .map(n => n.id)
     .filter(id => g.node(id));
   const exitOutcomeIds = nodeShells
-    .filter(n => n.data.endState && EXIT_IDS.has(n.id))
+    .filter(n => n.data.endState && EXIT_IDS.has(n.id) && !ALREADY_POSITIONED.has(n.id))
     .map(n => n.id)
     .filter(id => g.node(id));
 
