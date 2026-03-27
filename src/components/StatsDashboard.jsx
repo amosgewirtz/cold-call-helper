@@ -108,6 +108,8 @@ const StatsNode = memo(function StatsNode({ data }) {
   else if (data.convRate >= 20) cls += ' flow-node-hot';
   else if (data.convRate > 0) cls += ' flow-node-warm';
 
+  if (data.dimmed) cls += ' flow-node-dimmed';
+
   return (
     <div className={cls}>
       <Handle type="target" position={Position.Top} isConnectable={false} />
@@ -135,53 +137,61 @@ const STATS_LABELS = {
 function buildFlowElements(tree, logs) {
   if (logs.length === 0) return null;
 
-  // Count how many calls pass through each node and each edge transition
-  const nodeCounts = {};
-  const edgeCounts = {};
+  // Translate all paths once, keep them for hover filtering
+  const mappedPaths = [];
+  const globalNodeCounts = {};
+  const globalEdgeCounts = {};
 
   logs.forEach(log => {
     if (!log.path || log.path.length === 0) return;
     const mapped = mapLegacyPath(log.path);
+    mappedPaths.push(mapped);
 
     for (const id of mapped) {
-      nodeCounts[id] = (nodeCounts[id] || 0) + 1;
+      globalNodeCounts[id] = (globalNodeCounts[id] || 0) + 1;
     }
     for (let i = 0; i < mapped.length - 1; i++) {
       const key = `${mapped[i]}__${mapped[i + 1]}`;
-      edgeCounts[key] = (edgeCounts[key] || 0) + 1;
+      globalEdgeCounts[key] = (globalEdgeCounts[key] || 0) + 1;
     }
   });
 
-  // One React Flow node per unique funnel stage that had calls
-  const nodes = [];
-  for (const [id, count] of Object.entries(nodeCounts)) {
+  // Compute max edge flow for thickness scaling
+  let maxFlow = 1;
+  for (const flow of Object.values(globalEdgeCounts)) {
+    if (flow > maxFlow) maxFlow = flow;
+  }
+
+  // One React Flow node per unique funnel stage (layout shell — counts applied later)
+  const nodeShells = [];
+  for (const id of Object.keys(globalNodeCounts)) {
     const tn = tree[id];
-    nodes.push({
+    nodeShells.push({
       id,
       type: 'stats',
       position: { x: 0, y: 0 },
       data: {
         label: STATS_LABELS[id] || tn?.label || id,
-        total: count,
+        total: globalNodeCounts[id],
         endState: !!tn?.endState,
         endType: tn?.endType,
         isRoot: !!tn?.isOpenerChoice,
         hasCalls: true,
+        dimmed: false,
       },
     });
   }
 
-  // One React Flow edge per unique transition
-  let maxFlow = 1;
-  const edges = [];
-  for (const [key, flow] of Object.entries(edgeCounts)) {
+  // One edge per unique transition
+  const edgeShells = [];
+  for (const [key, flow] of Object.entries(globalEdgeCounts)) {
     const [source, target] = key.split('__');
-    if (!nodeCounts[source] || !nodeCounts[target]) continue;
-    if (flow > maxFlow) maxFlow = flow;
-    edges.push({
+    if (!globalNodeCounts[source] || !globalNodeCounts[target]) continue;
+    edgeShells.push({
       id: `e-${source}-${target}`,
       source,
       target,
+      flow,
       type: 'smoothstep',
       style: {
         strokeWidth: 1.5 + (flow / maxFlow) * 4,
@@ -191,14 +201,14 @@ function buildFlowElements(tree, logs) {
     });
   }
 
-  // Dagre layout
+  // --- Dagre layout ---
   const g = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
   g.setGraph({ rankdir: 'TB', nodesep: 50, ranksep: 70, marginx: 20, marginy: 20 });
 
-  nodes.forEach(node => {
+  nodeShells.forEach(node => {
     g.setNode(node.id, { width: DAGRE_NODE_W, height: DAGRE_NODE_H });
   });
-  edges.forEach(edge => {
+  edgeShells.forEach(edge => {
     g.setEdge(edge.source, edge.target);
   });
 
@@ -207,7 +217,7 @@ function buildFlowElements(tree, logs) {
   // Force openers to the same rank
   const root = Object.values(tree).find(n => n.isOpenerChoice);
   if (root) {
-    const opIds = (root.options || []).map(o => o.targetNodeId).filter(id => nodeCounts[id]);
+    const opIds = (root.options || []).map(o => o.targetNodeId).filter(id => globalNodeCounts[id]);
     if (opIds.length > 1) {
       const minY = Math.min(...opIds.map(id => g.node(id).y));
       opIds.forEach(id => { g.node(id).y = minY; });
@@ -216,7 +226,7 @@ function buildFlowElements(tree, logs) {
 
   // Reorder siblings within each rank: heaviest nodes near center
   const rankGroups = {};
-  nodes.forEach(node => {
+  nodeShells.forEach(node => {
     const pos = g.node(node.id);
     const rankKey = Math.round(pos.y);
     if (!rankGroups[rankKey]) rankGroups[rankKey] = [];
@@ -230,7 +240,8 @@ function buildFlowElements(tree, logs) {
     reordered.forEach((item, i) => { g.node(item.id).x = xSlots[i]; });
   });
 
-  const layoutedNodes = nodes.map(node => {
+  // Bake positions into nodes
+  const layoutedNodes = nodeShells.map(node => {
     const pos = g.node(node.id);
     return {
       ...node,
@@ -243,7 +254,10 @@ function buildFlowElements(tree, logs) {
     };
   });
 
-  return { nodes: layoutedNodes, edges };
+  return {
+    layoutedNodes, edgeShells, mappedPaths,
+    globalNodeCounts, globalEdgeCounts, maxFlow,
+  };
 }
 
 /* ─── Flow diagram component ─── */
@@ -259,18 +273,67 @@ function FlowDiagram({ tree, filteredLogs }) {
   const handleNodeEnter = useCallback((_, node) => setHoveredId(node.id), []);
   const handleNodeLeave = useCallback(() => setHoveredId(null), []);
 
-  const displayEdges = useMemo(() => {
-    if (!flowData) return [];
-    const { edges } = flowData;
-    if (!hoveredId) return edges;
-    return edges.map(e => ({
-      ...e,
-      style: {
-        ...e.style,
-        opacity: (e.source === hoveredId || e.target === hoveredId) ? 0.85 : 0.06,
-        transition: 'opacity 0.15s',
+  // Recompute node counts and edge styles when a node is hovered
+  const { displayNodes, displayEdges } = useMemo(() => {
+    if (!flowData) return { displayNodes: [], displayEdges: [] };
+    const {
+      layoutedNodes, edgeShells, mappedPaths,
+      globalNodeCounts, globalEdgeCounts, maxFlow,
+    } = flowData;
+
+    if (!hoveredId) {
+      const nodes = layoutedNodes.map(n => ({
+        ...n,
+        data: { ...n.data, total: globalNodeCounts[n.id] || 0, dimmed: false },
+      }));
+      const edges = edgeShells.map(e => ({
+        ...e,
+        style: {
+          strokeWidth: 1.5 + (e.flow / maxFlow) * 4,
+          stroke: '#64748b',
+          opacity: 0.55,
+        },
+      }));
+      return { displayNodes: nodes, displayEdges: edges };
+    }
+
+    // Filter to only paths that pass through the hovered node
+    const filtered = mappedPaths.filter(p => p.includes(hoveredId));
+    const filtNC = {};
+    const filtEC = {};
+    filtered.forEach(p => {
+      for (const id of p) filtNC[id] = (filtNC[id] || 0) + 1;
+      for (let i = 0; i < p.length - 1; i++) {
+        const k = `${p[i]}__${p[i + 1]}`;
+        filtEC[k] = (filtEC[k] || 0) + 1;
+      }
+    });
+
+    const onPath = new Set(Object.keys(filtNC));
+    const nodes = layoutedNodes.map(n => ({
+      ...n,
+      data: {
+        ...n.data,
+        total: filtNC[n.id] || 0,
+        dimmed: !onPath.has(n.id),
       },
     }));
+
+    const edges = edgeShells.map(e => {
+      const key = `${e.source}__${e.target}`;
+      const flow = filtEC[key] || 0;
+      return {
+        ...e,
+        style: {
+          strokeWidth: flow > 0 ? 1.5 + (flow / maxFlow) * 4 : 1,
+          stroke: flow > 0 ? '#64748b' : '#d1d5db',
+          opacity: flow > 0 ? 0.85 : 0.06,
+          transition: 'opacity 0.15s, stroke-width 0.15s',
+        },
+      };
+    });
+
+    return { displayNodes: nodes, displayEdges: edges };
   }, [flowData, hoveredId]);
 
   if (!flowData) {
@@ -284,7 +347,7 @@ function FlowDiagram({ tree, filteredLogs }) {
   return (
     <div className="flow-container">
       <ReactFlow
-        nodes={flowData.nodes}
+        nodes={displayNodes}
         edges={displayEdges}
         nodeTypes={nodeTypes}
         fitView

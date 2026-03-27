@@ -1111,6 +1111,11 @@ body {
   border-color: #eab308;
 }
 
+.flow-node-dimmed {
+  opacity: 0.2;
+  transition: opacity 0.15s;
+}
+
 .flow-node .react-flow__handle {
   opacity: 0;
   width: 6px;
