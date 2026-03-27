@@ -152,7 +152,7 @@ function buildFlowElements(tree, logs) {
     if (flow > maxFlow) maxFlow = flow;
   }
 
-  const EXIT_IDS = new Set(['no_pitch']);
+  const EXIT_IDS = new Set(['no_pitch', 'not_interested']);
 
   // One React Flow node per unique funnel stage, skip choose_opener (openers are the top row)
   const nodeShells = [];
@@ -247,6 +247,12 @@ function buildFlowElements(tree, logs) {
   if (exitNode && reachedNode) {
     exitNode.y = reachedNode.y;
     exitNode.x = centerX + DAGRE_NODE_W + 120;
+  }
+
+  const notIntNode = g.node('not_interested');
+  if (notIntNode && legacyNode) {
+    notIntNode.y = legacyNode.y + DAGRE_NODE_H + ranksep;
+    notIntNode.x = centerX + DAGRE_NODE_W + 120;
   }
 
   // Bake positions into nodes
