@@ -488,7 +488,7 @@ export default function StatsDashboard({ callLogs, aiObjections, tree }) {
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis dataKey="date" fontSize={11} tick={{ fill: '#6b7280' }} />
               <YAxis allowDecimals={false} fontSize={11} tick={{ fill: '#6b7280' }} width={24} />
-              <Tooltip />
+              <Tooltip cursor={false} contentStyle={{ fontSize: '0.8rem', borderRadius: 6, border: '1px solid #e5e7eb', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }} />
               <Bar dataKey="booked" name="Meeting booked" stackId="a" fill="#16a34a" radius={[0, 0, 0, 0]} />
               <Bar dataKey="other" name="Not booked" stackId="a" fill="#d1d5db" radius={[3, 3, 0, 0]} />
             </BarChart>
